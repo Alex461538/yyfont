@@ -205,7 +205,7 @@ namespace Font
             return k.x * p.x + k.y * p.y;
         }
 
-        double sign(double v)
+        float sign(float v)
         {
             if (v == 0)
             {
@@ -418,27 +418,60 @@ namespace Font
                    uint32_t(chars[3]);
         }
 
-        Math::Vector3f solveCubic(float a, float b, float c)
+        float Q_sin(float x)
         {
-            float p = b - a * a / 3.0, p3 = p * p * p;
+            return std::sin(x);
+        }
+
+        float Q_cos(float x)
+        {
+            return std::cos(x);
+        }
+
+        void solveCubic(float c0, float c1, float c2, float c3, float &r_0, float &r_1, float &r_2)
+        {
+            float a = c1 / c0;
+            float b = c2 / c0;
+            float c = c3 / c0;
+
+            float p = b - a * a / 3.0;
+            float p3 = p * p * p;
             float q = a * (2.0 * a * a - 9.0 * b) / 27.0 + c;
             float d = q * q + 4.0 * p3 / 27.0;
             float offset = -a / 3.0;
+
             if (d >= 0.0)
             {
-                float z = sqrt(d);
-                Math::Vector2f x = (Math::Vector2f(z, -z) - q) / 2.0;
-                Math::Vector2f uv = sign(x) * Math::pow(Math::abs(x), 1.0 / 3.0);
-                return Math::Vector3f(offset + uv.x + uv.y);
+                float z = d == 0 ? 0 : std::sqrt(d);
+
+                float x_0 = (z - q) / 2.0;
+                float x_1 = (-z - q) / 2.0;
+
+                float uvx = Math::sign(x_0) * std::cbrt(std::abs(x_0));
+                float uvy = Math::sign(x_1) * std::cbrt(std::abs(x_1));
+
+                r_0 = offset + uvx + uvy;
+                r_1 = r_0;
+                r_2 = r_0;
+                return;
             }
-            float v = acos(-sqrt(-27.0 / p3) * q / 2.0) / 3.0;
-            float m = cos(v), n = sin(v) * 1.732050808;
-            return Math::Vector3f(m + m, -n - m, n - m) * sqrt(-p / 3.0) + offset;
+            float v = std::acos( -std::sqrt( -27.0 / p3 ) * q / 2.0 ) / 3.0;
+            float m = Q_cos(v);
+            float n = Q_sin(v) * 1.732050808;
+            float ttt = std::sqrt(-p / 3.0);
+            r_0 = ttt * (m + m) + offset;
+            r_1 = ttt * (-n - m) + offset;
+            r_2 = ttt * (n - m) + offset;
         }
 
         double bezierLerp(double a, double b, double c, double t)
         {
             return (1 - t) * (1 - t) * a + 2 * (1 - t) * t * b + t * t * c;
+        }
+
+        double linearLerp(double a, double b, double t)
+        {
+            return b * t + a * (1.0 - t);
         }
 
         double bezierDerivative(double a, double b, double c, double t)
@@ -496,10 +529,11 @@ namespace Font
         struct BezierCurve
         {
         private:
-            double L2d(Math::Vector2f v) const
+            const float squaredDistance(const float a, const float b) const
             {
-                return v.x * v.x + v.y * v.y;
+                return a * a + b * b;
             }
+
         public:
             bool is_collinear = false;
             Math::Vector2i tail;
@@ -513,64 +547,65 @@ namespace Font
                     std::round(Utils::bezierLerp(tail.y, center.y, head.y, t)));
             }
 
-            double closest_t(Math::Vector2i P) const
+            float distance(Math::Vector2i P) const
             {
-                double t = 0;
-
                 if (is_collinear) // Line segment, easiest case
                 {
-                    double p01_x = head.x - tail.x;
-                    double p01_y = head.y - tail.y;
-                    double p0p_x = P.x - tail.x;
-                    double p0p_y = P.y - tail.y;
+                    int64_t p01_x = head.x - tail.x;
+                    int64_t p01_y = head.y - tail.y;
+                    int64_t p0p_x = P.x - tail.x;
+                    int64_t p0p_y = P.y - tail.y;
 
-                    t = (p0p_x * p01_x + p0p_y * p01_y) / (p01_x * p01_x + p01_y * p01_y);
+                    float t = std::min(
+                        1.0f,
+                        std::max(
+                            0.0f,
+                            float(p0p_x * p01_x + p0p_y * p01_y) / float(p01_x * p01_x + p01_y * p01_y)));
+
+                    return std::hypot(
+                        Utils::linearLerp(tail.x, head.x, t) - P.x,
+                        Utils::linearLerp(tail.y, head.y, t) - P.y);
                 }
                 else // The tangled
                 {
-                    Math::Vector2f a = center - tail, b = tail - center * 2.0 + head, c = a * 2.0, d = tail - P;
-                    Math::Vector3f k = Math::Vector3f(3.0 * dot(a, b), 2.0 * dot(a, a) + dot(d, b), dot(d, a)) * (1.0 / dot(b, b));
-                    Math::Vector3f ts = Utils::solveCubic(k.x, k.y, k.z);
+                    // P - P0
+                    int64_t p0_x = P.x - tail.x; //
+                    int64_t p0_y = P.y - tail.y;
+                    // P1 - P0
+                    int64_t p1_x = center.x - tail.x; //
+                    int64_t p1_y = center.y - tail.y;
+                    // P2 - 2P1 + P0
+                    int64_t p2_x = head.x - 2 * center.x + tail.x; //
+                    int64_t p2_y = head.y - 2 * center.y + tail.y;
 
-                    ts.x = std::min(1.0, std::max(0.0, ts.x));
-                    ts.y = std::min(1.0, std::max(0.0, ts.y));
-                    ts.z = std::min(1.0, std::max(0.0, ts.z));
+                    int64_t a = p2_x * p2_x + p2_y * p2_y;
+                    int64_t b = 3 * (p1_x * p2_x + p1_y * p2_y);
+                    int64_t c = 2 * (p1_x * p1_x + p1_y * p1_y) - (p2_x * p0_x + p2_y * p0_y);
+                    int64_t d = -(p1_x * p0_x + p1_y * p0_y);
 
-                    double d_0 = L2d( Math::Vector2f(tail) + (c + b*ts.x)*ts.x - Math::Vector2f(P) );
-                    double d_1 = L2d( Math::Vector2f(tail) + (c + b*ts.y)*ts.y - Math::Vector2f(P) );
-                    double d_2 = L2d( Math::Vector2f(tail) + (c + b*ts.z)*ts.z - Math::Vector2f(P) );
+                    float t_0 = 0;
+                    float t_1 = 0;
+                    float t_2 = 0;
 
-                    if (d_1 > d_2)
-                    {
-                        if (d_0 < d_2)
-                        {
-                            t = ts.x;
-                        }
-                        else
-                        {
-                            t = ts.z;
-                        }
-                    }
-                    else 
-                    {
-                        if (d_0 < d_1)
-                        {
-                            t = ts.x;
-                        }
-                        else
-                        {
-                            t = ts.y;
-                        }
-                    }
+                    Utils::solveCubic(a, b, c, d, t_0, t_1, t_2);
+
+                    t_0 = std::min(1.0f, std::max(0.0f, t_0));
+                    t_1 = std::min(1.0f, std::max(0.0f, t_1));
+                    t_2 = std::min(1.0f, std::max(0.0f, t_2));
+
+                    float d_0 = squaredDistance(
+                        P.x - Utils::bezierLerp(tail.x, center.x, head.x, t_0),
+                        P.y - Utils::bezierLerp(tail.y, center.y, head.y, t_0));
+                    float d_1 = squaredDistance(
+                        P.x - Utils::bezierLerp(tail.x, center.x, head.x, t_1),
+                        P.y - Utils::bezierLerp(tail.y, center.y, head.y, t_1));
+                    float d_2 = squaredDistance(
+                        P.x - Utils::bezierLerp(tail.x, center.x, head.x, t_2),
+                        P.y - Utils::bezierLerp(tail.y, center.y, head.y, t_2));
+
+                    return std::sqrt(
+                        std::min(std::min(d_0, d_1), d_2));
                 }
-
-                return t;
-            }
-
-            double distance(Math::Vector2i P) const
-            {
-                Math::Vector2i Q = lerp(std::min(1.0, std::max(0.0, closest_t(P))));
-                return std::abs(std::hypot(Q.x - P.x, Q.y - P.y));
             }
         };
 
