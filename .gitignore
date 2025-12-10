@@ -1,0 +1,7 @@
+tmp
+build
+main.cpp
+CMakeLists.txt
+CMakeFiles
+.vscode
+samples
