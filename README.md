@@ -2,15 +2,26 @@
 
 An almost single-header but modular font parser written in moderately modern c++.
 
-<img src="img/curve-dbg-draw.png" alt="drawing" width="100%" />
+
+![](img/curve-dbg-draw.png) | ![](img/unkcirlet.png)
+:---:|:---:
+
+![](img/wall.png)
 
 ### Load things easily.
 
 ```cpp
+#include "yyfont.hpp"
+#include "yyfont.sfnt.hpp" // Or any format you'd like
+```
+
+```cpp
+Font::SFNT::init(); // Register loaders for sfnt
+
 if (const auto &test_font = Font::fromPath("samples/nj.ttf"))
 {
     // Get internal ID's for unicode code points.
-    Font::GlyphIndex gi = test_font->getId("字");
+    Font::GlyphIndex gi = test_font->getId(u'字');
     // Access any properties about them.
     Font::GlyphMetrics gm = test_font->getMetrics(gi);
     // Or get their curves too 😏.

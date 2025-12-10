@@ -1006,6 +1006,12 @@ namespace Font
                 return font;
             }
         };
+
+        void init()
+        {
+            FontLoaderFactory::registerLoader(TrueTypeFont::Loader);
+            FontLoaderFactory::registerLoader(OpenTypeFont::Loader);
+        }
     };
 }
 
