@@ -721,49 +721,46 @@ namespace Font
         {
             uint8_t *atlas = (uint8_t*)data;
 
-            /* uint64_t slc = 0;
+            uint8_t half_thickness = thickness / 2;
 
-            for (int j = 0; j < gcur.curves.size(); j++)
-            {
-                if (j > gcur.contour_limits[slc].second)
-                {
-                    slc++;
-                } */
+            double x_scale = params.region.w / double(params.metrics->bounds.w);
+            double y_scale = params.region.h / double(params.metrics->bounds.h);
 
-                // const auto &prev_cur = gcur.curves[j == gcur.contour_limits[slc].first ? gcur.contour_limits[slc].second : j - 1];
+            int64_t metrics_dx = -params.metrics->bounds.x;
+            int64_t metrics_dy = -params.metrics->bounds.y;
 
             for (const auto &curve : params.curve->curves)
             {
                 GlyphCurve::BezierCurve cur = curve;
+                // Convert outlines to pixel coordinates
+                cur.tail.x = (cur.tail.x + metrics_dx) * x_scale + half_thickness + params.region.x;
+                cur.tail.y = (cur.tail.y + metrics_dy) * y_scale + half_thickness + params.region.y;
+                cur.center.x = (cur.center.x + metrics_dx) * x_scale + half_thickness + params.region.x;
+                cur.center.y = (cur.center.y + metrics_dy) * y_scale + half_thickness + params.region.y;
+                cur.head.x = (cur.head.x + metrics_dx) * x_scale + half_thickness + params.region.x;
+                cur.head.y = (cur.head.y + metrics_dy) * y_scale + half_thickness + params.region.y;
 
-                int64_t min_x = std::min(cur.tail.x, std::min(cur.center.x, cur.head.x)) - params.metrics->bounds.x;
-                int64_t max_x = std::max(cur.tail.x, std::max(cur.center.x, cur.head.x)) - params.metrics->bounds.x + thickness;
-
-                int64_t upper_y = std::min(cur.tail.y, std::min(cur.center.y, cur.head.y));
-                int64_t lower_y = std::max(cur.tail.y, std::max(cur.center.y, cur.head.y));
-
-                int64_t min_y = upper_y - params.metrics->bounds.y;
-                int64_t max_y = lower_y - params.metrics->bounds.y + thickness;
-
-                int64_t dx = params.metrics->bounds.x - thickness / 2;
-                int64_t dy = params.metrics->bounds.y - thickness / 2;
+                int64_t min_x = std::min(cur.tail.x, std::min(cur.center.x, cur.head.x)) - half_thickness;
+                int64_t min_y = std::min(cur.tail.y, std::min(cur.center.y, cur.head.y)) - half_thickness;
+                
+                int64_t max_x = std::max(cur.tail.x, std::max(cur.center.x, cur.head.x)) + half_thickness;
+                int64_t max_y = std::max(cur.tail.y, std::max(cur.center.y, cur.head.y)) + half_thickness;
 
                 for (int y = min_y; y < max_y; y++)
                 {
                     int64_t x_start = min_x;
                     int64_t x_end = max_x;
 
-                    // Do a ray marching btw
                     float dst = 0;
                     do
                     {
-                        dst = cur.distance(Math::Vector2i(x_start + params.metrics->bounds.x - thickness / 2, y + params.metrics->bounds.y - thickness / 2)) - thickness / 2;
+                        dst = cur.distance(Math::Vector2i(x_start, y)) - thickness / 2;
                         x_start += dst;
                     } while (dst > 1);
 
                     do
                     {
-                        dst = cur.distance(Math::Vector2i(x_end + params.metrics->bounds.x - thickness / 2, y + params.metrics->bounds.y - thickness / 2)) - thickness / 2;
+                        dst = cur.distance(Math::Vector2i(x_end, y)) - thickness / 2;
                         x_end -= dst;
                     } while (dst > 1);
 
@@ -773,7 +770,7 @@ namespace Font
 
                         int8_t distance = 0x7f - (int8_t)std::min(
                                                      127.0f,
-                                                     cur.distance(Math::Vector2i(x + dx, y + dy)) * 255 / thickness);
+                                                     cur.distance(Math::Vector2i(x, y)) * 255 / thickness);
 
                         *pix = 0xff000000 | std::max(int8_t(*pix & 0xff), distance);
                     }
