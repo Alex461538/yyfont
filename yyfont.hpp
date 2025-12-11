@@ -455,7 +455,7 @@ namespace Font
                 r_2 = r_0;
                 return;
             }
-            float v = std::acos( -std::sqrt( -27.0 / p3 ) * q / 2.0 ) / 3.0;
+            float v = std::acos(-std::sqrt(-27.0 / p3) * q / 2.0) / 3.0;
             float m = Q_cos(v);
             float n = Q_sin(v) * 1.732050808;
             float ttt = std::sqrt(-p / 3.0);
@@ -696,6 +696,90 @@ namespace Font
         }
 
         return nullptr;
+    }
+
+    struct RasterParameters
+    {
+        GlyphCurve *curve;
+        GlyphMetrics *metrics;
+        Math::Rect4i region;
+    };
+
+    /**
+        @brief Font loader function type.
+        @param mem memory of the atlas image.
+        @param width atlas width.
+        @param height atlas height.
+        @param params raster params
+        @return An optional Font reference
+    */
+    typedef void Rasterizer2DFn(const void *, size_t, size_t, RasterParameters);
+
+    namespace Rasterizer
+    {
+        void SDF(const void * data, size_t atlas_width, size_t atlas_height, RasterParameters params, uint8_t thickness)
+        {
+            uint8_t *atlas = (uint8_t*)data;
+
+            /* uint64_t slc = 0;
+
+            for (int j = 0; j < gcur.curves.size(); j++)
+            {
+                if (j > gcur.contour_limits[slc].second)
+                {
+                    slc++;
+                } */
+
+                // const auto &prev_cur = gcur.curves[j == gcur.contour_limits[slc].first ? gcur.contour_limits[slc].second : j - 1];
+
+            for (const auto &curve : params.curve->curves)
+            {
+                GlyphCurve::BezierCurve cur = curve;
+
+                int64_t min_x = std::min(cur.tail.x, std::min(cur.center.x, cur.head.x)) - params.metrics->bounds.x;
+                int64_t max_x = std::max(cur.tail.x, std::max(cur.center.x, cur.head.x)) - params.metrics->bounds.x + thickness;
+
+                int64_t upper_y = std::min(cur.tail.y, std::min(cur.center.y, cur.head.y));
+                int64_t lower_y = std::max(cur.tail.y, std::max(cur.center.y, cur.head.y));
+
+                int64_t min_y = upper_y - params.metrics->bounds.y;
+                int64_t max_y = lower_y - params.metrics->bounds.y + thickness;
+
+                int64_t dx = params.metrics->bounds.x - thickness / 2;
+                int64_t dy = params.metrics->bounds.y - thickness / 2;
+
+                for (int y = min_y; y < max_y; y++)
+                {
+                    int64_t x_start = min_x;
+                    int64_t x_end = max_x;
+
+                    // Do a ray marching btw
+                    float dst = 0;
+                    do
+                    {
+                        dst = cur.distance(Math::Vector2i(x_start + params.metrics->bounds.x - thickness / 2, y + params.metrics->bounds.y - thickness / 2)) - thickness / 2;
+                        x_start += dst;
+                    } while (dst > 1);
+
+                    do
+                    {
+                        dst = cur.distance(Math::Vector2i(x_end + params.metrics->bounds.x - thickness / 2, y + params.metrics->bounds.y - thickness / 2)) - thickness / 2;
+                        x_end -= dst;
+                    } while (dst > 1);
+
+                    for (int x = x_start; x < x_end; x++)
+                    {
+                        uint32_t *pix = (uint32_t *)&(atlas[(y * atlas_width + x) * 4]);
+
+                        int8_t distance = 0x7f - (int8_t)std::min(
+                                                     127.0f,
+                                                     cur.distance(Math::Vector2i(x + dx, y + dy)) * 255 / thickness);
+
+                        *pix = 0xff000000 | std::max(int8_t(*pix & 0xff), distance);
+                    }
+                }
+            }
+        }
     }
 }
 
