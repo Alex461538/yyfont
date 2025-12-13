@@ -428,6 +428,28 @@ namespace Font
             return std::cos(x);
         }
 
+        void solveQuadratic(double a, double b, double c, double &r_0, double &r_1)
+        {
+            double d = b * b - 4 * a * c;
+
+            if (d == 0)
+            {
+                r_0 = -b / (2 * a);
+                r_1 = r_0;
+            }
+            else if (d > 0)
+            {
+                double cd = std::sqrt(d);
+                r_0 = (-b - cd) / (2 * a);
+                r_1 = (-b + cd) / (2 * a);
+            }
+            else
+            {
+                r_0 = NAN;
+                r_1 = NAN;
+            }
+        }
+
         void solveCubic(float c0, float c1, float c2, float c3, float &r_0, float &r_1, float &r_2)
         {
             float a = c1 / c0;
@@ -715,64 +737,251 @@ namespace Font
     */
     typedef void Rasterizer2DFn(const void *, size_t, size_t, RasterParameters);
 
+    class GlyphAtlas
+    {
+        struct GlyphEntry
+        {
+            GlyphCurve curve;
+            Math::Rect4f bounds;
+            uint16_t page;
+            double uv[4];
+        };
+
+        struct AtlasPage
+        {
+            std::unique_ptr<uint8_t[]> image;
+            Math::Vector2i size;
+        };
+
+        std::vector<AtlasPage> pages;
+        std::map<GlyphIndex, std::shared_ptr<GlyphEntry>> entries;
+
+        std::shared_ptr<GlyphEntry> getEntry(GlyphIndex index)
+        {
+            auto k = entries.find(index);
+            if (k != entries.end())
+            {
+                return k->second;
+            }
+            return nullptr;
+        }
+
+        GlyphAtlas() {}
+    };
+
     namespace Rasterizer
     {
-        void SDF(const void * data, size_t atlas_width, size_t atlas_height, RasterParameters params, uint8_t thickness)
+        union Color32
         {
-            uint8_t *atlas = (uint8_t*)data;
+            struct
+            {
+                uint8_t r;
+                uint8_t g;
+                uint8_t b;
+                uint8_t a;
+            };
+            uint32_t color;
+        };
 
-            uint8_t half_thickness = thickness / 2;
-
-            double x_scale = params.region.w / double(params.metrics->bounds.w);
-            double y_scale = params.region.h / double(params.metrics->bounds.h);
-
-            int64_t metrics_dx = -params.metrics->bounds.x;
-            int64_t metrics_dy = -params.metrics->bounds.y;
-
+        void scanline(const void *data, size_t atlas_width, size_t atlas_height, RasterParameters params)
+        {
+            uint8_t *atlas = (uint8_t *)data;
+            // Calculate paint region
+            uint32_t region_min_x = std::max(0L, params.region.x);
+            uint32_t region_min_y = std::max(0L, params.region.y);
+            uint32_t region_max_x = std::min((long)atlas_width, region_min_x + std::abs(params.region.w));
+            uint32_t region_max_y = std::min((long)atlas_height, region_min_y + std::abs(params.region.h));
+            // Count of glyph space pixels per atlas space pixels.
+            double scale = std::max(
+                double(params.metrics->bounds.w) / (region_max_x - region_min_x),
+                double(params.metrics->bounds.h) / (region_max_y - region_min_y));
+            // Displacement of glyph curves for avoiding edge cases
+            double offset = scale / 2;
+            // Bake any transformed glyphs
+            std::vector<GlyphCurve::BezierCurve> curves;
             for (const auto &curve : params.curve->curves)
             {
                 GlyphCurve::BezierCurve cur = curve;
-                // Convert outlines to pixel coordinates
-                cur.tail.x = (cur.tail.x + metrics_dx) * x_scale + half_thickness + params.region.x;
-                cur.tail.y = (cur.tail.y + metrics_dy) * y_scale + half_thickness + params.region.y;
-                cur.center.x = (cur.center.x + metrics_dx) * x_scale + half_thickness + params.region.x;
-                cur.center.y = (cur.center.y + metrics_dy) * y_scale + half_thickness + params.region.y;
-                cur.head.x = (cur.head.x + metrics_dx) * x_scale + half_thickness + params.region.x;
-                cur.head.y = (cur.head.y + metrics_dy) * y_scale + half_thickness + params.region.y;
+                // Move curve coordinates to first quadrant (No negatives)
+                cur.tail.x = cur.tail.x - params.metrics->bounds.x;
+                cur.tail.y = cur.tail.y - params.metrics->bounds.y;
+                cur.center.x = cur.center.x - params.metrics->bounds.x;
+                cur.center.y = cur.center.y - params.metrics->bounds.y;
+                cur.head.x = cur.head.x - params.metrics->bounds.x;
+                cur.head.y = cur.head.y - params.metrics->bounds.y;
+                // Later use a better data struct
+                curves.push_back(cur);
+                // Good idea: Keep boundary iterators
+            }
 
-                int64_t min_x = std::min(cur.tail.x, std::min(cur.center.x, cur.head.x)) - half_thickness;
-                int64_t min_y = std::min(cur.tail.y, std::min(cur.center.y, cur.head.y)) - half_thickness;
-                
-                int64_t max_x = std::max(cur.tail.x, std::max(cur.center.x, cur.head.x)) + half_thickness;
-                int64_t max_y = std::max(cur.tail.y, std::max(cur.center.y, cur.head.y)) + half_thickness;
-
-                for (int y = min_y; y < max_y; y++)
+            for (uint32_t y = region_min_y; y < region_max_y; y++)
+            {
+                double gly_y = (y - region_min_y) * scale;
+                // Calculate any intersections in the half displaced grid
+                std::map<float, std::pair<float, float>> intersections;
+                for (const auto &cur : curves)
                 {
-                    int64_t x_start = min_x;
-                    int64_t x_end = max_x;
+                    // Skip any unneeded curves
+                    if (
+                        std::min(cur.tail.y, std::min(cur.center.y, cur.head.y)) > gly_y ||
+                        std::max(cur.tail.y, std::max(cur.center.y, cur.head.y)) < gly_y)
+                    {
+                        continue;
+                    }
+                    // Handle collinear case
+                    if (cur.is_collinear)
+                    {
+                        if (cur.head.y - cur.tail.y == 0)
+                        {
+                            continue;
+                        }
+                        double t = double(gly_y - cur.tail.y) / (cur.head.y - cur.tail.y);
 
-                    float dst = 0;
+                        if (t >= 0.0f && t <= 1.0f)
+                        {
+                            float x = Utils::bezierLerp(cur.tail.x, cur.center.x, cur.head.x, t) / scale;
+                            intersections[x] = {
+                                Utils::bezierDerivative(cur.tail.x, cur.center.x, cur.head.x, t),
+                                Utils::bezierDerivative(cur.tail.y, cur.center.y, cur.head.y, t)};
+                        }
+                    }
+                    // Handle bezier case
+                    else
+                    {
+                        double t_0, t_1;
+                        Utils::solveQuadratic(
+                            cur.tail.y - 2.0f * cur.center.y + cur.head.y,
+                            2.0f * (cur.center.y - cur.tail.y),
+                            cur.tail.y - gly_y,
+                            t_0, t_1);
+
+                        if (!(t_0 == t_1 || std::isnan(t_0) || std::isnan(t_1)))
+                        {
+                            // Push intersections if not edges
+                            if (t_0 >= 0.0f && t_0 <= 1.0f)
+                            {
+                                float x = Utils::bezierLerp(cur.tail.x, cur.center.x, cur.head.x, t_0) / scale;
+                                intersections[x] = {
+                                    Utils::bezierDerivative(cur.tail.x, cur.center.x, cur.head.x, t_0),
+                                    Utils::bezierDerivative(cur.tail.y, cur.center.y, cur.head.y, t_0)};
+                            }
+                            if (t_1 >= 0.0f && t_1 <= 1.0f)
+                            {
+                                float x = Utils::bezierLerp(cur.tail.x, cur.center.x, cur.head.x, t_1) / scale;
+                                intersections[x] = {
+                                    Utils::bezierDerivative(cur.tail.x, cur.center.x, cur.head.x, t_1),
+                                    Utils::bezierDerivative(cur.tail.y, cur.center.y, cur.head.y, t_1)};
+                            }
+                        }
+                    }
+                }
+                // If anything goes wrong, skip the scanline
+                if (intersections.size() % 2 != 0)
+                {
+                    continue;
+                }
+                // Get full x-segments with winding
+                int winding_value = 0;
+                for (auto it = intersections.begin(); it != intersections.end();)
+                {
+                    auto start = it++;
+                    // Wind for first intersection
+                    winding_value += std::signbit(start->second.second) ? -1 : 1;
+                    // Go ahead until we exit the outline
+                    auto end = it;
+                    while (it != intersections.end() && winding_value != 0)
+                    {
+                        end = it++;
+                        winding_value += std::signbit(end->second.second) ? -1 : 1;
+                    }
+                    // Get extrema
+                    uint32_t x_A = std::max(0, std::min((int)atlas_width, (int)std::round(start->first)));
+                    uint32_t x_B = std::max(0, std::min((int)atlas_width, (int)std::round(end->first)));
+                    // Create routine fill x with derivative gradient
+                    for (uint32_t x = x_A; x < x_B; x++)
+                    {
+                        Color32 &pix = ((Color32 *)atlas)[y * atlas_width + x];
+
+                        pix.a = 255;
+                        pix.r = 255;
+                    }
+                }
+            }
+        }
+
+        void SDF(const void *data, size_t atlas_width, size_t atlas_height, RasterParameters params, int8_t thickness)
+        {
+            uint8_t *atlas = (uint8_t *)data;
+
+            int8_t one_side_thickness = thickness / 2;
+
+            uint32_t region_min_x = std::max(0L, params.region.x);
+            uint32_t region_min_y = std::max(0L, params.region.y);
+            uint32_t region_max_x = std::min((long)atlas_width, region_min_x + std::abs(params.region.w));
+            uint32_t region_max_y = std::min((long)atlas_height, region_min_y + std::abs(params.region.h));
+
+            double scale = std::min(
+                (region_max_x - region_min_x - thickness) / double(params.metrics->bounds.w),
+                (region_max_y - region_min_y - thickness) / double(params.metrics->bounds.h));
+
+            float distance_scale = 255 / (thickness / scale);
+
+            for (const auto &curve : params.curve->curves)
+            {
+                int64_t scaled_one_side_thickness = one_side_thickness / scale;
+                GlyphCurve::BezierCurve cur = curve;
+                // Move curve coordinates to first quadrant (No negatives)
+                cur.tail.x = cur.tail.x - params.metrics->bounds.x + scaled_one_side_thickness;
+                cur.tail.y = cur.tail.y - params.metrics->bounds.y + scaled_one_side_thickness;
+                cur.center.x = cur.center.x - params.metrics->bounds.x + scaled_one_side_thickness;
+                cur.center.y = cur.center.y - params.metrics->bounds.y + scaled_one_side_thickness;
+                cur.head.x = cur.head.x - params.metrics->bounds.x + scaled_one_side_thickness;
+                cur.head.y = cur.head.y - params.metrics->bounds.y + scaled_one_side_thickness;
+                // Compute paint bounds
+                uint32_t paint_min_x = std::max((double)region_min_x, std::min((double)region_max_x, std::min(cur.tail.x, std::min(cur.center.x, cur.head.x)) * scale + region_min_x - one_side_thickness));
+                uint32_t paint_min_y = std::max((double)region_min_y, std::min((double)region_max_y, std::min(cur.tail.y, std::min(cur.center.y, cur.head.y)) * scale + region_min_y - one_side_thickness));
+                uint32_t paint_max_x = std::max((double)region_min_x, std::min((double)region_max_x, std::max(cur.tail.x, std::max(cur.center.x, cur.head.x)) * scale + region_min_x + one_side_thickness));
+                uint32_t paint_max_y = std::max((double)region_min_y, std::min((double)region_max_y, std::max(cur.tail.y, std::max(cur.center.y, cur.head.y)) * scale + region_min_y + one_side_thickness));
+
+                for (uint32_t paint_y = paint_min_y; paint_y < paint_max_y; paint_y++)
+                {
+                    int32_t y = paint_y / scale;
+                    int32_t x_start = paint_min_x, x_end = paint_max_x;
+
+                    int32_t dst = 0;
                     do
                     {
-                        dst = cur.distance(Math::Vector2i(x_start, y)) - thickness / 2;
+                        dst = cur.distance(Math::Vector2i(x_start / scale, y)) * scale - scaled_one_side_thickness;
+                        if (dst <= 0)
+                        {
+                            break;
+                        }
                         x_start += dst;
-                    } while (dst > 1);
+                    } while (x_start < x_end);
 
                     do
                     {
-                        dst = cur.distance(Math::Vector2i(x_end, y)) - thickness / 2;
+                        dst = cur.distance(Math::Vector2i(x_end / scale, y)) * scale - scaled_one_side_thickness;
+                        if (dst <= 0)
+                        {
+                            break;
+                        }
                         x_end -= dst;
-                    } while (dst > 1);
+                    } while (x_start < x_end);
 
-                    for (int x = x_start; x < x_end; x++)
+                    if (x_start > x_end)
                     {
-                        uint32_t *pix = (uint32_t *)&(atlas[(y * atlas_width + x) * 4]);
+                        continue;
+                    }
 
-                        int8_t distance = 0x7f - (int8_t)std::min(
-                                                     127.0f,
-                                                     cur.distance(Math::Vector2i(x, y)) * 255 / thickness);
+                    for (uint32_t paint_x = x_start; paint_x < x_end; paint_x++)
+                    {
+                        Color32 &pix = ((Color32 *)atlas)[paint_y * atlas_width + paint_x];
 
-                        *pix = 0xff000000 | std::max(int8_t(*pix & 0xff), distance);
+                        uint8_t distance = 0x7f - (int8_t)std::min(127.0f, cur.distance(Math::Vector2i(paint_x / scale, y)) * distance_scale);
+
+                        pix.a = 255;
+                        pix.r = std::max(uint8_t(pix.r & 0xff), distance);
                     }
                 }
             }
