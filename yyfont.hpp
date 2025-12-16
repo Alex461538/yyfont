@@ -795,8 +795,6 @@ namespace Font
             double scale = std::max(
                 double(params.metrics->bounds.w) / (region_max_x - region_min_x),
                 double(params.metrics->bounds.h) / (region_max_y - region_min_y));
-            // Displacement of glyph curves for avoiding edge cases
-            double offset = scale / 2;
             // Bake any transformed glyphs
             std::vector<GlyphCurve::BezierCurve> curves;
             for (const auto &curve : params.curve->curves)
@@ -816,7 +814,8 @@ namespace Font
 
             for (uint32_t y = region_min_y; y < region_max_y; y++)
             {
-                double gly_y = (y - region_min_y) * scale;
+                // With the offset, the scanline will never overlap with the curve's extremes (Unless rounding errors, floats are a trascendental lie)
+                double gly_y = std::round((y - region_min_y) * scale) + 0.5;
                 // Calculate any intersections in the half displaced grid
                 std::map<float, std::pair<float, float>> intersections;
                 for (const auto &cur : curves)
@@ -854,18 +853,18 @@ namespace Font
                             2.0f * (cur.center.y - cur.tail.y),
                             cur.tail.y - gly_y,
                             t_0, t_1);
-
-                        if (!(t_0 == t_1 || std::isnan(t_0) || std::isnan(t_1)))
+            
+                        if (!(std::isnan(t_0) || std::isnan(t_1)))
                         {
                             // Push intersections if not edges
-                            if (t_0 >= 0.0f && t_0 <= 1.0f)
+                            if (t_0 >= 0 && t_0 <= 1)
                             {
                                 float x = Utils::bezierLerp(cur.tail.x, cur.center.x, cur.head.x, t_0) / scale;
                                 intersections[x] = {
                                     Utils::bezierDerivative(cur.tail.x, cur.center.x, cur.head.x, t_0),
                                     Utils::bezierDerivative(cur.tail.y, cur.center.y, cur.head.y, t_0)};
                             }
-                            if (t_1 >= 0.0f && t_1 <= 1.0f)
+                            if (t_1 >= 0 && t_1 <= 1)
                             {
                                 float x = Utils::bezierLerp(cur.tail.x, cur.center.x, cur.head.x, t_1) / scale;
                                 intersections[x] = {
