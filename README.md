@@ -1,23 +1,20 @@
 # ☔️ yyfont.hpp
 
-An almost single-header but modular font parser written in moderately modern c++.
+A modular font parser written in moderately modern c++.
 
+![](img/atlas.png)
 
-![](img/curve-dbg-draw.png) | ![](img/unkcirlet.png)
-:---:|:---:
-
-![](img/wall.png)
-
-### Load things easily.
+## It's easy to use btw 🤙
 
 ```cpp
-#include "yyfont.hpp"
-#include "yyfont.sfnt.hpp" // Or any format you'd like
+#include "yyfont.hpp" // Import the main module
+#include "yyfont.sfnt.hpp" // And any format you'd like
+...
+Font::SFNT::init(); // Register loaders for those
 ```
 
 ```cpp
-Font::SFNT::init(); // Register loaders for sfnt
-
+// Load your favorite font!
 if (const auto &test_font = Font::fromPath("samples/nj.ttf"))
 {
     // Get internal ID's for unicode code points.
@@ -25,11 +22,28 @@ if (const auto &test_font = Font::fromPath("samples/nj.ttf"))
     // Access any properties about them.
     Font::GlyphMetrics gm = test_font->getMetrics(gi);
     // Or get their curves too 😏.
-    Font::Glyph letter = test_font->getGlyph(gi)
+    Font::GlyphCurve letter = test_font->getCurves(gi);
 }
 ```
 
-### Register new formats
+```cpp
+// Get your preferred charset
+std::vector<Font::GlyphIndex> indices = { ... };
+// And create an atlas for it!
+int64_t atlas_width = 512;
+int64_t atlas_height = 512;
+
+auto atlas = std::make_unique<uint8_t[]>(atlas_width * atlas_height * 4);
+
+// Get scaled rects for the glyphs (font size = 50px)
+auto rects = Font::Packer::getScaledRects(test_font.get(), indices, 50);
+// Pack them with any algorithm 📦️
+Font::Packer::basicSortPack(rects, atlas_width, atlas_height);
+// And rasterize everything together 🖍️
+Font::Rasterizer::bulk(test_font.get(), rects, atlas.get(), atlas_width, atlas_height, Font::Rasterizer::scanline);
+```
+
+## Register new formats
 
 There are allways obscurer formats out there. If you're brave enough, go ahead and extend the system!
 
@@ -52,9 +66,9 @@ const auto &test_font = Font::fromPath("samples/font.jfp")
 
 The factory will try to load a file with every loader until any claims it.
 
-### License
+## License
 
-Do whatever you want with this, I don't give a.. [Mit License](LICENSE)
+Do whatever you want with this, I don't give a... [Mit License](LICENSE)
 
 ### Resources
 

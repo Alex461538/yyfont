@@ -576,7 +576,6 @@ namespace Font
                     return false;
                 }
             }
-
         public:
             virtual ~SFNTFont() = default;
 
@@ -584,12 +583,22 @@ namespace Font
             std::map<TableTag, DirectoryEntry> directories;
             std::map<TableTag, std::unique_ptr<Table>> tables;
 
-            GlyphIndex getId(CodePoint codepoint) override
+            GlyphIndex getId(CodePoint codepoint) const override
             {
                 const auto it = tables.find(TableTag::cmap);
                 if (it != tables.end() && dynamic_cast<CmapTable *>(it->second.get()))
                 {
                     return ((CmapTable *)(it->second.get()))->map(codepoint);
+                }
+                return 0;
+            }
+
+            double getScale(double font_size) const override
+            {
+                const auto it = tables.find(TableTag::head);
+                if (it != tables.end() && dynamic_cast<HeadTable *>(it->second.get()))
+                {
+                    return (font_size / float(((HeadTable *)(it->second.get()))->units_per_em) );
                 }
                 return 0;
             }
@@ -600,13 +609,12 @@ namespace Font
         public:
             ~TrueTypeFont() override {}
 
-            GlyphMetrics getMetrics(GlyphIndex g_index) override
+            GlyphMetrics getMetrics(GlyphIndex g_index) const override
             {
                 GlyphMetrics metrics;
-
                 /* At this point, any valid ttf ( NOT BITMAP ) has those tables */
-                GlyfTable *glyf_table = dynamic_cast<GlyfTable *>(tables[TableTag::glyf].get());
-                HmtxTable *hmtx_table = dynamic_cast<HmtxTable *>(tables[TableTag::hmtx].get());
+                GlyfTable *glyf_table = dynamic_cast<GlyfTable *>(tables.at(TableTag::glyf).get());
+                HmtxTable *hmtx_table = dynamic_cast<HmtxTable *>(tables.at(TableTag::hmtx).get());
 
                 size_t index = glyf_table->index_to_loc[g_index];
                 const uint8_t *data = glyf_table->glyph_data.get(); // Safety? fuck off
@@ -632,10 +640,10 @@ namespace Font
                 return metrics;
             }
 
-            GlyphCurve getCurves(GlyphIndex g_index) override
+            GlyphCurve getCurves(GlyphIndex g_index) const override
             {
                 /* At this point, any valid ttf ( NOT BITMAP ) has those tables */
-                GlyfTable *glyf_table = dynamic_cast<GlyfTable *>(tables[TableTag::glyf].get());
+                GlyfTable *glyf_table = dynamic_cast<GlyfTable *>(tables.at(TableTag::glyf).get());
 
                 GlyphCurve glyph_curve = GlyphCurve();
 
@@ -980,12 +988,12 @@ namespace Font
             ~OpenTypeFont() override {}
 
             // What an undefined reference ;)
-            GlyphMetrics getMetrics(GlyphIndex index) override
+            GlyphMetrics getMetrics(GlyphIndex index) const override
             {
                 return GlyphMetrics();
             }
 
-            GlyphCurve getCurves(GlyphIndex index) override
+            GlyphCurve getCurves(GlyphIndex index) const override
             {
                 return GlyphCurve();
             }
@@ -1010,7 +1018,7 @@ namespace Font
         void init()
         {
             FontLoaderFactory::registerLoader(TrueTypeFont::Loader);
-            FontLoaderFactory::registerLoader(OpenTypeFont::Loader);
+            //FontLoaderFactory::registerLoader(OpenTypeFont::Loader);
         }
     };
 }

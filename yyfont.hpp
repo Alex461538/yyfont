@@ -430,6 +430,13 @@ namespace Font
 
         void solveQuadratic(double a, double b, double c, double &r_0, double &r_1)
         {
+            if (a == 0)
+            {
+                r_0 = -c / b;
+                r_1 = r_0;
+                return;
+            }
+
             double d = b * b - 4 * a * c;
 
             if (d == 0)
@@ -651,9 +658,10 @@ namespace Font
     {
     public:
         virtual ~Font() = default;
-        virtual GlyphIndex getId(CodePoint codepoint) = 0;
-        virtual GlyphMetrics getMetrics(GlyphIndex index) = 0;
-        virtual GlyphCurve getCurves(GlyphIndex index) = 0;
+        virtual GlyphIndex getId(CodePoint codepoint) const = 0;
+        virtual GlyphMetrics getMetrics(GlyphIndex index) const = 0;
+        virtual GlyphCurve getCurves(GlyphIndex index) const = 0;
+        virtual double getScale(double font_size) const = 0;
     };
 
     /**
@@ -720,24 +728,7 @@ namespace Font
         return nullptr;
     }
 
-    struct RasterParameters
-    {
-        GlyphCurve *curve;
-        GlyphMetrics *metrics;
-        Math::Rect4i region;
-    };
-
-    /**
-        @brief Font loader function type.
-        @param mem memory of the atlas image.
-        @param width atlas width.
-        @param height atlas height.
-        @param params raster params
-        @return An optional Font reference
-    */
-    typedef void Rasterizer2DFn(const void *, size_t, size_t, RasterParameters);
-
-    class GlyphAtlas
+    /* class GlyphAtlas
     {
         struct GlyphEntry
         {
@@ -767,7 +758,93 @@ namespace Font
         }
 
         GlyphAtlas() {}
+    }; */
+
+    namespace Packer
+    {
+        std::map<GlyphIndex, Math::Rect4i> getScaledRects(const Font *font, const std::vector<GlyphIndex> &glyph_indices, const double font_size)
+        {
+            std::map<GlyphIndex, Math::Rect4i> rects = {};
+            // Get font scale
+            double scale = font->getScale(font_size);
+            // Get scaled rects
+            for (const auto &gi : glyph_indices)
+            {
+                GlyphMetrics mt = font->getMetrics(gi);
+                Math::Rect4i rect;
+
+                rect.x = 0;
+                rect.y = 0;
+                rect.w = std::round(mt.bounds.w * scale);
+                rect.h = std::round(mt.bounds.h * scale);
+                rects[gi] = rect;
+            }
+            return rects;
+        }
+
+        void basicSortPack(std::map<GlyphIndex, Math::Rect4i> &rects, int64_t canvas_width, int64_t canvas_height)
+        {
+            if (rects.empty())
+            {
+                return;
+            }
+            // Get pair pointers
+            typedef std::pair<const GlyphIndex, Math::Rect4i> pair_t;
+            std::vector<pair_t *> pairs;
+            for (auto &p : rects)
+            {
+                pairs.push_back(&p);
+            }
+            // Sort rects by width and then by reverse h
+            std::sort(
+                pairs.begin(),
+                pairs.end(),
+                [](pair_t *a, pair_t *b)
+                {
+                    return a->second.w > b->second.w || (a->second.w == b->second.w && a->second.h > b->second.h);
+                });
+            // Init packing vars
+            int64_t advance_x = 0;
+            int64_t advance_y = 0; // resets to 0
+            int64_t bin_width = pairs[0]->second.w;
+            int64_t padding = 1;
+            for (auto &pair : pairs)
+            {
+                if (
+                    pair->second.w > bin_width ||
+                    advance_y + pair->second.h + padding > canvas_height)
+                {
+                    advance_x += bin_width + padding;
+                    advance_y = 0;
+                    bin_width = pair->second.w;
+                    if (advance_x + bin_width > canvas_width)
+                    {
+                        break;
+                    }
+                }
+                pair->second.x = advance_x;
+                pair->second.y = advance_y;
+                advance_y += pair->second.h + padding;
+            }
+        }
+    }
+
+    struct RasterParameters
+    {
+        GlyphCurve *curve;
+        GlyphMetrics *metrics;
+        Math::Rect4i region;
     };
+
+    /**
+        @brief Font loader function type.
+        @param mem memory of the atlas image.
+        @param width atlas width.
+        @param height atlas height.
+        @param params raster params
+        @return An optional Font reference
+    */
+    typedef void RasterizerFn(const void *, size_t, size_t, RasterParameters);
 
     namespace Rasterizer
     {
@@ -782,6 +859,27 @@ namespace Font
             };
             uint32_t color;
         };
+
+        void bulk(const Font *font, std::map<GlyphIndex, Math::Rect4i> &rects, const void *atlas, size_t atlas_width, size_t atlas_height, RasterizerFn raster_fn)
+        {
+            for (const auto &p : rects)
+            {
+                RasterParameters params;
+
+                auto gm = font->getMetrics(p.first);
+                auto gcur = font->getCurves(p.first);
+
+                params.metrics = &gm;
+                params.curve = &gcur;
+                params.region = Math::Rect4i(
+                    p.second.x,
+                    p.second.y,
+                    p.second.w,
+                    p.second.h);
+                
+                raster_fn(atlas, atlas_width, atlas_height, params);
+            }
+        }
 
         void scanline(const void *data, size_t atlas_width, size_t atlas_height, RasterParameters params)
         {
@@ -818,6 +916,7 @@ namespace Font
                 double gly_y = std::round((y - region_min_y) * scale) + 0.5;
                 // Calculate any intersections in the half displaced grid
                 std::map<float, std::pair<float, float>> intersections;
+
                 for (const auto &cur : curves)
                 {
                     // Skip any unneeded curves
@@ -853,7 +952,6 @@ namespace Font
                             2.0f * (cur.center.y - cur.tail.y),
                             cur.tail.y - gly_y,
                             t_0, t_1);
-            
                         if (!(std::isnan(t_0) || std::isnan(t_1)))
                         {
                             // Push intersections if not edges
@@ -877,7 +975,12 @@ namespace Font
                 // If anything goes wrong, skip the scanline
                 if (intersections.size() % 2 != 0)
                 {
-                    continue;
+                    for (const auto &i : intersections)
+                    {
+                        std::printf("III: %f %f %f\n", i.first, i.second.first, i.second.second);
+                    }
+                    std::printf("fucked up %f\n", gly_y);
+                    exit(0);
                 }
                 // Get full x-segments with winding
                 int winding_value = 0;
@@ -897,7 +1000,7 @@ namespace Font
                     uint32_t x_A = std::max(0, std::min((int)atlas_width, (int)std::round(start->first)));
                     uint32_t x_B = std::max(0, std::min((int)atlas_width, (int)std::round(end->first)));
                     // Create routine fill x with derivative gradient
-                    for (uint32_t x = x_A; x < x_B; x++)
+                    for (uint32_t x = x_A + region_min_x; x < x_B + region_min_x; x++)
                     {
                         Color32 &pix = ((Color32 *)atlas)[y * atlas_width + x];
 
